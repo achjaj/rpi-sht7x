@@ -16,6 +16,7 @@ class SHT7x:
         self.data_pin = data
         self.delay = delay_us / 1e6
         self.lower_res = False
+        self.crc_reg = 0
 
         if d1 is None:
             match voltage:
@@ -40,11 +41,6 @@ class SHT7x:
         self.sck(0)
         self.data(1)
 
-    def in_use(self, only):
-        return [self.data_pin[i] for i in only] if only else self.data_pin
-    
-    def in_use_len(self, only):
-        return len(only) if only else len(self.data_pin)
 
     def sck(self, v):
         gpio.output(self.sck_pin, v)
@@ -55,162 +51,146 @@ class SHT7x:
         self.sck(0)
         self.dly()
 
-    def data(self, v, only):
-        gpio.output(self.in_use(only), v)
+    def data(self, v):
+        gpio.output(self.data_pin, v)
 
-    def switch_data(self, direction, only):
-        gpio.cleanup(self.in_use(only))
-        gpio.setup(self.in_use(only), direction)
+    def switch_data(self, direction):
+        gpio.cleanup(self.data_pin)
+        gpio.setup(self.data_pin, direction)
 
-    def r_data(self, only):
-        bits = []
-        for pin in self.in_use(only):
-            bits.append(gpio.input(pin))
+    def r_data(self):
+        return gpio.input(self.data_pin)
 
-        return bits
-
-    def data_ack(self, only, comm_end = False):
-        self.switch_data(gpio.OUT, only)
-        self.data(1, only) if comm_end else self.data(0, only)
+    def data_ack(self, comm_end = False):
+        self.switch_data(gpio.OUT)
+        self.data(1) if comm_end else self.data(0)
         self.dly(0.5)
         self.sckPulse()
-        self.switch_data(gpio.IN, only)
+        self.switch_data(gpio.IN)
 
     def dly(self, mul = 1):
         sleep(self.delay * mul)
 
-    def comm_reset(self, only = None):
-        self.data(1, only)
+    def comm_reset(self):
+        self.data(1)
         for i in range(9):
             self.sckPulse()
 
-    def read_byte(self, only, comm_end = False):
-        v = [0] * self.in_use_len(only)
+    def read_byte(self, comm_end = False):
+        v = 0
         for i in range(8):
-            for j, bit in enumerate(self.r_data(only)):
-                v[j] = 2*v[j] + bit
+            v = 2*v + self.r_data()
             self.sckPulse()
             self.dly(0.5)
 
         self.dly()
-        self.data_ack(only, comm_end)
+        self.data_ack(comm_end)
         return v
 
 
-    def start(self, only):
-        self.switch_data(gpio.OUT, only)
-        self.data(1, only)
+    def start(self):
+        self.switch_data(gpio.OUT)
+        self.data(1)
 
         self.sck(1)
         self.dly()
-        self.data(0, only)
+        self.data(0)
         self.dly()
 
         self.sck(0)
         self.dly()
         self.sck(1)
         self.dly()
-        self.data(1, only)
+        self.data(1)
         self.dly()
         self.sck(0)
 
-    def send_byte(self, byte, only):
+    def send_byte(self, byte):
         mask = 128
         for i in range(8):
-            self.data(byte & mask, only)
+            self.data(byte & mask)
             self.dly(0.5)
             self.sckPulse()
             mask = mask >> 1
 
-        self.switch_data(gpio.IN, only)
+        self.switch_data(gpio.IN)
         self.sck(1)
         self.dly(0.5)
-        ack = self.r_data(only)
+        ack = self.r_data()
         self.sck(0)
 
-        if not (ack == [0] * self.in_use_len(only)):
-            raise Warning("Data send ACK error in one device: {}".format(ack))
+        if not (ack == 0):
+            raise Exception("Data send ACK error")
 
-    def send_cmd(self, cmd, only):
-        self.start(only)
+    def send_cmd(self, cmd):
+        self.start()
         self.dly(2)
-        self.send_byte(cmd, only)
+        self.send_byte(cmd)
 
-    def read_response(self, only):
+    def read_response(self):
         self.sck(0)
 
-        msb = self.read_byte(only)
-        lsb = self.read_byte(only)
+        msb = self.read_byte()
+        lsb = self.read_byte()
 
-        value = [0] * self.in_use_len(only)
-        for i, m in enumerate(msb):
-            value[i] = (m << 8) + lsb[i]
+        value = (msb << 8) + lsb
 
-        crc = self.read_byte(only, comm_end = True)
+        crc = self.read_byte(comm_end = True)
         self.sck(0)
         return value, crc
 
-    def wait_for_measurement(self, only):
-        self.switch_data(gpio.IN, only)
+    def wait_for_measurement(self):
+        self.switch_data(gpio.IN)
 
         for i in range(320):
             sleep(1e-3) # wait one ms
-            if self.r_data(only) == [0] * self.in_use_len(only):
+            if self.r_data() == 0:
                 return
 
         raise Exception("Measurement timeout")
 
 
-    def read_status_register(self, only = None):
-        self.send_cmd(7, only) # cmd 000 00111
+    def read_status_register(self):
+        self.sendcmd(7) # cmd 000 00111
         self.dly()
         # TODO: perform CRC check
-        register, crc = self.read_byte(only), self.read_byte(only, comm_end = True)
+        register, crc = self.read_byte(), self.read_byte(comm_end = True)
         self.sck(0)
         return register, crc
 
-    def write_status_register(self, bits, only = None):
-        self.send_cmd(6, only) # cmd 000 00110
+    def write_status_register(self, bits):
+        self.send_cmd(6) # cmd 000 00110
         self.dly(2)
-        self.switch_data(gpio.OUT, only)
-        self.send_byte(bits, only)
+        self.switch_data(gpio.OUT)
+        self.send_byte(bits)
 
-    def set_flags_on(self, flags, only = None):
-        self.write_status_register(flags, only)
-        if flags & 1 == 1:
-            if only:
-                for i in only:
-                    self.lower_res[i] = True
-            else:
-                self.lower_res = [True]*len(self.data_pin)
+    def set_flags_on(self, flags):
+        self.write_status_register(flags)
+        self.lower_res = (flags & 1 == 1)
 
-    def measure(self, cmd, temp_correction = False, only = None):
-        self.send_cmd(cmd, only)
-        self.wait_for_measurement(only)
-        raw, crc = self.read_response(only)
-
-        result_len = self.in_use_len(only)
-        result = [0] * result_len
+    def measure(self, cmd, temp_correction = False):
+        self.send_cmd(cmd)
+        self.wait_for_measurement()
+        raw, crc = self.read_response()
         if cmd == TEMP:
-            for i, r in enumerate(raw):
-                result[i] = (0.04 if self.lower_res[i] else 0.01)*r + self.d1 # WARNING: NOT CORRECT! self.lower_res[i]
+            return (0.04 if self.lower_res else 0.01)*raw + self.d1
 
         if cmd == HUM:
-            rh_lin = [0] * result_len
-            for i, r in enumerate(raw):
-                rh_lin[i] = -2.0468 + (0.5872 if self.lower_res else 0.0367)*r + (-4.0845e-4 if self.lower_res else -1.5955e-6)*(r**2)
-            
-            result = rh_lin
+            rh_lin = -2.0468 + (0.5872 if self.lower_res else 0.0367)*raw + (-4.0845e-4 if self.lower_res else -1.5955e-6)*(raw**2)
+
             if temp_correction:
                 self.dly(3)
-                result = (self.read_measurement(TEMP, self.lower_res, only = only) - 25)*(0.01 + (0.00128 if self.lower_res else 0.00008)*raw) + rh_lin
+                return (self.read_measurement(TEMP, self.lower_res) - 25)*(0.01 + (0.00128 if self.lower_res else 0.00008)*raw) + rh_lin
 
-        return result
+            return rh_lin
 
 
-if __name__ == "__main__":
-    gpio.setmode(gpio.BCM)
-    sht = SHT7x(17, [27, 22])
-    print(sht.measure(TEMP))
 
-    gpio.cleanup()
+gpio.setmode(gpio.BCM)
+
+sht = SHT7x(17, 27)
+while True:
+    print(sht.measure(HUM))
+    sleep(1)
+
+gpio.cleanup()
