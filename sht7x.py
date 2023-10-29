@@ -222,14 +222,3 @@ class SHT7x:
                 return (self.read_measurement(TEMP, self.lower_res) - 25)*(0.01 + (0.00128 if self.lower_res else 0.00008)*raw) + rh_lin
 
             return rh_lin
-
-
-
-gpio.setmode(gpio.BCM)
-
-sht = SHT7x(17, 27)
-while True:
-    print(sht.measure(HUM))
-    sleep(1)
-
-gpio.cleanup()
