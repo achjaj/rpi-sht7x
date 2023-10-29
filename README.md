@@ -1,7 +1,7 @@
 # rpi-sht7x
 Raspberry Pi python "driver" for SHT7x temperature and humidity sensors. 
 
-## This library is under heavy development, and it is not production-ready now!
+## This library is under heavy development!
 
 ## Implemented features
  - Read temperature
